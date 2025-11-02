@@ -20,8 +20,10 @@ variable "db_username" {
 }
 variable "db_password" {
   description = "Password admin de la BD"
-  default     = "TuPasswordSegura123" # ¡Cámbia esto!
+  type        = string
   sensitive   = true
+  # ¡CORRECCIÓN! El valor 'default' se ha quitado.
+  # Jenkins inyectará el valor de forma segura.
 }
 
 # --- RED (VPC) ---
@@ -78,7 +80,9 @@ resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws__internet_gateway.gw.id
+    # --- ¡CORRECCIÓN DE TYPO! ---
+    # Era 'aws__internet_gateway' y debe ser 'aws_internet_gateway'
+    gateway_id = aws_internet_gateway.gw.id
   }
   tags = { Name = "proyecto-public-rt" }
 }
@@ -132,7 +136,7 @@ resource "aws_security_group" "ecs_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"] # Permite salida a internet (para composer, etc.)
+    cidr_blocks = ["0.0.0.0/0"] # Permite salida a internet
   }
 }
 
@@ -177,7 +181,7 @@ resource "aws_db_instance" "main" {
   identifier_prefix     = "proyecto-db"
   engine                = "mysql"
   engine_version        = "8.0"
-  instance_class        = "db.t3.micro" # Clase pequeña para desarrollo/pruebas
+  instance_class        = "db.t3.micro" 
   allocated_storage     = 20
   
   db_name               = "gestion_db"
@@ -209,7 +213,7 @@ resource "aws_alb_target_group" "app" {
   target_type = "ip" # Requerido para Fargate
 
   health_check {
-    path = "/" # Ruta de health check (ajusta si tienes una)
+    path = "/" 
   }
 }
 
@@ -231,7 +235,6 @@ resource "aws_ecs_cluster" "main" {
 }
 
 # --- Rol IAM para las tareas de ECS ---
-# Esto permite a tus contenedores acceder a otros servicios (como S3 o SQS si lo necesitas)
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "proyecto-ecs-task-execution-role"
   assume_role_policy = jsonencode({
@@ -255,7 +258,6 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_policy" {
 }
 
 # --- SALIDA (Output) ---
-# Mostraremos estos valores cuando Terraform termine
 output "alb_dns_name" {
   value = aws_alb.main.dns_name
   description = "La URL pública de la aplicación"

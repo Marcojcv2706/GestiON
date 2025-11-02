@@ -1,0 +1,75 @@
+/* gestion/task-definition-template.json */
+/* --- ARCHIVO NUEVO QUE DEBES CREAR --- */
+
+{
+    "family": "proyecto-gestion-task",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "1024",
+    "memory": "2048",
+    "executionRoleArn": "${ECS_TASK_EXECUTION_ROLE_ARN}",
+    "containerDefinitions": [
+        {
+            "name": "app",
+            "image": "${ECR_APP_REPO_URL}:${IMAGE_TAG}",
+            "cpu": 512,
+            "memory": 1024,
+            "essential": true,
+            "portMappings": [
+                {
+                    "containerPort": 9000,
+                    "protocol": "tcp"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/proyecto-gestion",
+                    "awslogs-region": "us-east-1",
+                    "awslogs-stream-prefix": "app"
+                }
+            },
+            "environment": [
+                { "name": "APP_NAME", "value": "GestiON" },
+                { "name": "APP_ENV", "value": "production" },
+                { "name": "APP_KEY", "value": "base64:Y7DUTe9vUTJLx8YZpam1wsYqGxulG/Rv5+tkJ5D9mSY=" },
+                { "name": "APP_DEBUG", "value": "false" },
+                { "name": "APP_URL", "value": "http://${ALB_DNS_NAME}" },
+                { "name": "DB_CONNECTION", "value": "mysql" },
+                { "name": "DB_HOST", "value": "${DB_ENDPOINT}" },
+                { "name": "DB_PORT", "value": "3306" },
+                { "name": "DB_DATABASE", "value": "gestion_db" },
+                { "name": "DB_USERNAME", "value": "admin" },
+                { "name": "DB_PASSWORD", "value": "${DB_PASSWORD}" },
+                { "name": "SESSION_DRIVER", "value": "database" }
+            ]
+        },
+        {
+            "name": "web",
+            "image": "${ECR_WEB_REPO_URL}:${IMAGE_TAG}",
+            "cpu": 512,
+            "memory": 1024,
+            "essential": true,
+            "portMappings": [
+                {
+                    "containerPort": 80,
+                    "hostPort": 80
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/proyecto-gestion",
+                    "awslogs-region": "us-east-1",
+                    "awslogs-stream-prefix": "web"
+                }
+            },
+            "dependsOn": [
+                {
+                    "containerName": "app",
+                    "condition": "START"
+                }
+            ]
+        }
+    ]
+}
