@@ -51,7 +51,7 @@ pipeline {
 
                         // Obtenemos los IDs de la red de Terraform
                         def subnets = sh(returnStdout: true, script: "aws ec2 describe-subnets --filters 'Name=tag:Name,Values=proyecto-public-*' --query 'Subnets[*].SubnetId' --output json").trim()
-                        def sg = sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=tag:Name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()
+                        def sg = sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=group-name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()
                         def tg_arn = sh(returnStdout: true, script: "aws elbv2 describe-target-groups --names proyecto-alb-tg --query 'TargetGroups[0].TargetGroupArn' --output text").trim()
 
                         // Primero, registramos una task-definition "dummy"
