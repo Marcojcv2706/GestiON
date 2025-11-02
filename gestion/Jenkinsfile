@@ -36,8 +36,16 @@ pipeline {
             }
         }
 
-        // --- Etapa 2: Crear el Servicio ECS (Primera Vez) ---
-       script {
+        // --- Etapa 2: Crear el Servicio ECS (Solo la primera vez) ---
+        stage('Crear Servicio ECS (Solo la primera vez)') {
+            when {
+                expression { params.CREATE_SERVICE }
+            }
+            steps {
+                withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
+                    
+                    // --- INICIO DE CORRECCIÓN: 'script' está DENTRO de 'steps' y 'withAWS' ---
+                    script { 
                         // Obtenemos las variables dinámicas DENTRO del bloque withAWS
                         def awsAccountId = sh(returnStdout: true, script: 'aws sts get-caller-identity --query Account --output text').trim()
                         def ecsTaskRoleArn = "arn:aws:iam::${awsAccountId}:role/proyecto-ecs-task-execution-role"
@@ -45,10 +53,7 @@ pipeline {
                         def sg = sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=group-name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()
                         def tg_arn = sh(returnStdout: true, script: "aws elbv2 describe-target-groups --names proyecto-alb-tg --query 'TargetGroups[0].TargetGroupArn' --output text").trim()
 
-                        // --- INICIO DE LA CORRECCIÓN ---
-
                         // 1. Definimos un "dummy" JSON que tenga un 'containerName=web' y 'containerPort=80'
-                        //    para que coincida con el load balancer. Usamos una imagen 'nginx' simple.
                         def dummyTaskJson = """
                         {
                             "family": "${ECS_TASK_FAMILY}",
@@ -90,7 +95,11 @@ pipeline {
                             --network-configuration "awsvpcConfiguration={subnets=${subnets},securityGroups=[${sg}],assignPublicIp=ENABLED}" \
                             --load-balancers "targetGroupArn=${tg_arn},containerName=web,containerPort=80"
                         """
-                        // --- FIN DE LA CORRECCIÓN ---
+                    }
+                    // --- FIN DE CORRECCIÓN ---
+                }
+            }
+        }
                     }
         // --- Etapa 3: Build de la Aplicación Laravel ---
         stage('Build Docker App (Laravel)') {
