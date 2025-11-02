@@ -1,0 +1,164 @@
+// PROYECTO/GestiON/Jenkinsfile
+
+pipeline {
+    agent any
+
+    environment {
+        // --- Variables Globales ---
+        // Estas se obtienen de la salida de Terraform
+        AWS_REGION                 = "us-east-1"
+        AWS_ACCOUNT_ID             = sh(returnStdout: true, script: 'aws sts get-caller-identity --query Account --output text').trim()
+        ECR_APP_REPO_URL           = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/proyecto-gestion-app"
+        ECR_WEB_REPO_URL           = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/proyecto-gestion-web"
+        ECS_CLUSTER_NAME           = "proyecto-cluster"
+        ECS_SERVICE_NAME           = "proyecto-servicio" // El servicio que crearemos
+        ECS_TASK_FAMILY            = "proyecto-gestion-task"
+        ECS_TASK_EXECUTION_ROLE_ARN= "arn:aws:iam::${AWS_ACCOUNT_ID}:role/proyecto-ecs-task-execution-role" // Rol de Terraform
+        // La URL pública del balanceador
+        ALB_DNS_NAME               = sh(returnStdout: true, script: "aws elbv2 describe-load-balancers --names proyecto-alb --query 'LoadBalancers[0].DNSName' --output text").trim()
+        // El endpoint de la BD
+        DB_ENDPOINT                = sh(returnStdout: true, script: "aws rds describe-db-instances --db-instance-identifier-prefix proyecto-db --query 'DBInstances[0].Endpoint.Address' --output text").trim()
+        // La contraseña de la BD (¡Mejor usar Credenciales de Jenkins!)
+        DB_PASSWORD                = "TuPasswordSegura123" 
+        // Tag único para la imagen
+        IMAGE_TAG                  = "build-${env.BUILD_NUMBER}"
+    }
+
+    stages {
+
+        // --- Etapa 1: Ejecutar Terraform (Crear el Clúster) ---
+        // Esta etapa solo se corre 'a mano' la primera vez o para cambios de infra
+        stage('Automatizar Creación de Infra (Terraform)') {
+            // Se activa manualmente desde Jenkins con el parámetro "RUN_TERRAFORM"
+            when {
+                expression { params.RUN_TERRAFORM }
+            }
+            steps {
+                dir('infra_aws') { // Asume que el main.tf está en la carpeta 'infra_aws'
+                    withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
+                        sh 'terraform init'
+                        // Pasamos las variables de BD
+                        sh "terraform apply -auto-approve -var 'db_password=${DB_PASSWORD}'"
+                    }
+                }
+            }
+        }
+
+        // --- Etapa 2: Crear el Servicio ECS (Primera Vez) ---
+        // Esto conecta el Clúster con el Balanceador. Solo se corre una vez.
+        stage('Crear Servicio ECS (Solo la primera vez)') {
+            when {
+                expression { params.CREATE_SERVICE }
+            }
+            steps {
+                withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
+                    // Obtenemos los IDs de la red de Terraform
+                    def subnets = sh(returnStdout: true, script: "aws ec2 describe-subnets --filters 'Name=tag:Name,Values=proyecto-public-*' --query 'Subnets[*].SubnetId' --output json").trim()
+                    def sg = sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=tag:Name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()
+                    def tg_arn = sh(returnStdout: true, script: "aws elbv2 describe-target-groups --names proyecto-alb-tg --query 'TargetGroups[0].TargetGroupArn' --output text").trim()
+
+                    // Primero, registramos una task-definition "dummy" (necesaria para crear el servicio)
+                    // Usamos la imagen 'hello-world' como placeholder
+                    sh """
+                        aws ecs register-task-definition --family ${ECS_TASK_FAMILY} \
+                        --execution-role-arn ${ECS_TASK_EXECUTION_ROLE_ARN} \
+                        --network-mode awsvpc \
+                        --cpu 256 --memory 512 \
+                        --requires-compatibilities FARGATE \
+                        --container-definitions '[{"name":"hello","image":"hello-world","essential":true}]'
+                    """
+
+                    // Ahora creamos el servicio
+                    sh """
+                        aws ecs create-service --cluster ${ECS_CLUSTER_NAME} \
+                        --service-name ${ECS_SERVICE_NAME} \
+                        --task-definition ${ECS_TASK_FAMILY}:1 \
+                        --launch-type FARGATE \
+                        --desired-count 1 \
+                        --network-configuration "awsvpcConfiguration={subnets=${subnets},securityGroups=[${sg}],assignPublicIp=ENABLED}" \
+                        --load-balancers "targetGroupArn=${tg_arn},containerName=web,containerPort=80"
+                    """
+                }
+            }
+        }
+
+        // --- Etapa 3: Build de la Aplicación Laravel ---
+        stage('Build Docker App (Laravel)') {
+            steps {
+                dir('PROYECTO/GestiON') { // Entramos en la carpeta del proyecto
+                    // Hacemos login en ECR
+                    sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                    
+                    // Construimos la imagen de la app
+                    sh "docker build -t ${ECR_APP_REPO_URL}:${IMAGE_TAG} -f Dockerfile ."
+                    
+                    // Subimos la imagen de la app
+                    sh "docker push ${ECR_APP_REPO_URL}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        // --- Etapa 4: Build del Servidor Web (Nginx) ---
+        stage('Build Docker Web (Nginx)') {
+            steps {
+                // Creamos un Dockerfile temporal para Nginx que solo copia el .conf
+                writeFile file: 'Dockerfile.nginx', text: """
+                    FROM nginx:1.25-alpine
+                    COPY PROYECTO/GestiON/docker/nginx.conf /etc/nginx/conf.d/default.conf
+                """
+                
+                sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                
+                // Construimos la imagen de Nginx
+                sh "docker build -t ${ECR_WEB_REPO_URL}:${IMAGE_TAG} -f Dockerfile.nginx ."
+                
+                // Subimos la imagen de Nginx
+                sh "docker push ${ECR_WEB_REPO_URL}:${IMAGE_TAG}"
+            }
+        }
+        
+        // --- Etapa 5: Desplegar en ECS (Actualizar Servicio) ---
+        stage('Deploy to ECS') {
+            steps {
+                dir('PROYECTO/GestiON') { // Entramos en la carpeta del proyecto
+                    withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
+                        
+                        // 1. Rellenamos la plantilla JSON con las variables de entorno
+                        def taskTemplate = readFile('task-definition-template.json')
+                        def taskDef = taskTemplate
+                            .replace('${ECS_TASK_EXECUTION_ROLE_ARN}', env.ECS_TASK_EXECUTION_ROLE_ARN)
+                            .replace('${ECR_APP_REPO_URL}', env.ECR_APP_REPO_URL)
+                            .replace('${ECR_WEB_REPO_URL}', env.ECR_WEB_REPO_URL)
+                            .replace('${IMAGE_TAG}', env.IMAGE_TAG)
+                            .replace('${ALB_DNS_NAME}', env.ALB_DNS_NAME)
+                            .replace('${DB_ENDPOINT}', env.DB_ENDPOINT)
+                            .replace('${DB_PASSWORD}', env.DB_PASSWORD)
+
+                        writeFile file: 'new-task-def.json', text: taskDef
+                        
+                        // 2. Registramos la nueva Task Definition
+                        def taskRevision = sh(returnStdout: true, script: "aws ecs register-task-definition --cli-input-json file://new-task-def.json --query 'taskDefinition.taskDefinitionArn' --output text").trim()
+                        
+                        echo "Nueva Task Definition registrada: ${taskRevision}"
+
+                        // 3. Actualizamos el servicio para que use la nueva Task
+                        sh "aws ecs update-service --cluster ${ECS_CLUSTER_NAME} --service ${ECS_SERVICE_NAME} --task-definition ${taskRevision} --force-new-deployment"
+                        
+                        echo "¡Despliegue iniciado en ECS!"
+
+                        // 4. (Opcional) Ejecutar migraciones
+                        // Este es un paso avanzado. Lanza una tarea "one-off" para correr la migración.
+                        echo "Ejecutando migraciones..."
+                        sh """
+                           aws ecs run-task --cluster ${ECS_CLUSTER_NAME} \
+                           --task-definition ${taskRevision} \
+                           --launch-type FARGATE \
+                           --network-configuration "awsvpcConfiguration={subnets=[${sh(returnStdout: true, script: "aws ec2 describe-subnets --filters 'Name=tag:Name,Values=proyecto-public-a' --query 'Subnets[0].SubnetId' --output text").trim()}],securityGroups=[${sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=tag:Name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()}]}" \
+                           --overrides '{"containerOverrides":[{"name":"app","command":["php","artisan","migrate","--force"]}]}'
+                        """
+                    }
+                }
+            }
+        }
+    }
+}
