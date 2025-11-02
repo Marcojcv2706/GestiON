@@ -122,7 +122,7 @@ resource "aws_security_group" "alb_sg" {
 
 resource "aws_security_group" "ecs_sg" {
   name        = "proyecto-ecs-sg"
-  description = "Permite tráfico desde el ALB"
+  description = "Permite trafico desde el ALB"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -142,7 +142,7 @@ resource "aws_security_group" "ecs_sg" {
 
 resource "aws_security_group" "rds_sg" {
   name        = "proyecto-rds-sg"
-  description = "Permite tráfico desde los contenedores ECS"
+  description = "Permite trafico desde los contenedores ECS"
   vpc_id      = aws_vpc.main.id
 
   ingress {
