@@ -18,13 +18,14 @@ pipeline {
 
     stages {
 
-        // --- Etapa 1: Ejecutar Terraform (Crear el Clúster) ---
+     // --- Etapa 1: Ejecutar Terraform (Crear el Clúster) ---
         stage('Automatizar Creación de Infra (Terraform)') {
             when {
                 expression { params.RUN_TERRAFORM }
             }
             steps {
-                dir('infra_aws') { 
+                // --- ¡ESTA ES LA LÍNEA CORREGIDA! ---
+                dir('gestion/infra_aws') { 
                     withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
                         withCredentials([string(credentialsId: 'rds-db-password', variable: 'DB_PASS_SECRET')]) {
                             sh 'terraform init'
