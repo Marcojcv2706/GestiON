@@ -1,13 +1,11 @@
 // gestion/Jenkinsfile
-// --- CÓDIGO COMPLETAMENTE CORREGIDO ---
+// --- CÓDIGO COMPLETAMENTE CORREGIDO (Sintaxis, Lógica Etapa 2, Permisos) ---
 
 pipeline {
     agent any
 
     environment {
         // --- Variables Globales ---
-        // ¡CORRECCIÓN! Se han quitado TODOS los comandos 'sh "aws..."' de aquí.
-        // Solo dejamos variables estáticas.
         AWS_REGION                 = "us-east-1"
         ECS_CLUSTER_NAME           = "proyecto-cluster"
         ECS_SERVICE_NAME           = "proyecto-servicio" // El servicio que crearemos
@@ -18,15 +16,16 @@ pipeline {
 
     stages {
 
-     // --- Etapa 1: Ejecutar Terraform (Crear el Clúster) ---
+        // --- Etapa 1: Ejecutar Terraform (Crear el Clúster) ---
         stage('Automatizar Creación de Infra (Terraform)') {
             when {
                 expression { params.RUN_TERRAFORM }
             }
             steps {
-                // --- ¡ESTA ES LA LÍNEA CORREGIDA! ---
+                // Ruta corregida
                 dir('gestion/infra_aws') { 
                     withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
+                        // Usamos la credencial 'rds-db-password' para la contraseña de la BD
                         withCredentials([string(credentialsId: 'rds-db-password', variable: 'DB_PASS_SECRET')]) {
                             sh 'terraform init'
                             sh "terraform apply -auto-approve -var 'db_password=${DB_PASS_SECRET}'"
@@ -37,6 +36,7 @@ pipeline {
         }
 
         // --- Etapa 2: Crear el Servicio ECS (Solo la primera vez) ---
+        // --- ESTA ES LA ETAPA CON LA SINTAXIS CORREGIDA ---
         stage('Crear Servicio ECS (Solo la primera vez)') {
             when {
                 expression { params.CREATE_SERVICE }
@@ -44,12 +44,13 @@ pipeline {
             steps {
                 withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
                     
-                    // --- INICIO DE CORRECCIÓN: 'script' está DENTRO de 'steps' y 'withAWS' ---
+                    // 'script' debe ir DENTRO de 'steps' y 'withAWS'
                     script { 
                         // Obtenemos las variables dinámicas DENTRO del bloque withAWS
                         def awsAccountId = sh(returnStdout: true, script: 'aws sts get-caller-identity --query Account --output text').trim()
                         def ecsTaskRoleArn = "arn:aws:iam::${awsAccountId}:role/proyecto-ecs-task-execution-role"
                         def subnets = sh(returnStdout: true, script: "aws ec2 describe-subnets --filters 'Name=tag:Name,Values=proyecto-public-*' --query 'Subnets[*].SubnetId' --output json").trim()
+                        // Filtro corregido para usar 'group-name'
                         def sg = sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=group-name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()
                         def tg_arn = sh(returnStdout: true, script: "aws elbv2 describe-target-groups --names proyecto-alb-tg --query 'TargetGroups[0].TargetGroupArn' --output text").trim()
 
@@ -96,19 +97,17 @@ pipeline {
                             --load-balancers "targetGroupArn=${tg_arn},containerName=web,containerPort=80"
                         """
                     }
-                    // --- FIN DE CORRECCIÓN ---
                 }
             }
         }
-                    }
+
         // --- Etapa 3: Build de la Aplicación Laravel ---
         stage('Build Docker App (Laravel)') {
             steps {
+                // Ruta corregida
                 dir('gestion') { 
                     withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
                         script {
-                            // --- CORRECCIÓN ---
-                            // Obtenemos el ID de cuenta aquí para ECR
                             def awsAccountId = sh(returnStdout: true, script: 'aws sts get-caller-identity --query Account --output text').trim()
                             def ecrAppRepoUrl = "${awsAccountId}.dkr.ecr.${AWS_REGION}.amazonaws.com/proyecto-gestion-app"
 
@@ -131,8 +130,6 @@ pipeline {
             steps {
                 withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
                     script {
-                        // --- CORRECCIÓN ---
-                        // Obtenemos el ID de cuenta aquí para ECR
                         def awsAccountId = sh(returnStdout: true, script: 'aws sts get-caller-identity --query Account --output text').trim()
                         def ecrWebRepoUrl = "${awsAccountId}.dkr.ecr.${AWS_REGION}.amazonaws.com/proyecto-gestion-web"
                         
@@ -158,12 +155,12 @@ pipeline {
         // --- Etapa 5: Desplegar en ECS (Actualizar Servicio) ---
         stage('Deploy to ECS') {
             steps {
+                // Ruta corregida
                 dir('gestion') { 
                     withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
                         script { 
                             withCredentials([string(credentialsId: 'rds-db-password', variable: 'DB_PASS_SECRET')]) {
                         
-                                // --- CORRECCIÓN ---
                                 // Obtenemos TODAS las variables dinámicas de AWS aquí
                                 def awsAccountId = sh(returnStdout: true, script: 'aws sts get-caller-identity --query Account --output text').trim()
                                 def ecrAppRepoUrl = "${awsAccountId}.dkr.ecr.${AWS_REGION}.amazonaws.com/proyecto-gestion-app"
@@ -201,7 +198,7 @@ pipeline {
                                    aws ecs run-task --cluster ${ECS_CLUSTER_NAME} \
                                    --task-definition ${taskRevision} \
                                    --launch-type FARGATE \
-                                   --network-configuration "awsvpcConfiguration={subnets=[${sh(returnStdout: true, script: "aws ec2 describe-subnets --filters 'Name=tag:Name,Values=proyecto-public-a' --query 'Subnets[0].SubnetId' --output text").trim()}],securityGroups=[${sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=tag:Name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()}]}" \
+                                   --network-configuration "awsvpcConfiguration={subnets=[${sh(returnStdout: true, script: "aws ec2 describe-subnets --filters 'Name=tag:Name,Values=proyecto-public-a' --query 'Subnets[0].SubnetId' --output text").trim()}],securityGroups=[${sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=group-name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()}]}" \
                                    --overrides '{"containerOverrides":[{"name":"app","command":["php","artisan","migrate","--force"]}]}'
                                 """
                             }
