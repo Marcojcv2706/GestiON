@@ -35,71 +35,80 @@ pipeline {
             }
         }
 
-        // --- Etapa 2: Crear el Servicio ECS (Solo la primera vez) ---
-        // --- ESTA ES LA ETAPA CON LA SINTAXIS CORREGIDA ---
-        stage('Crear Servicio ECS (Solo la primera vez)') {
-            when {
-                expression { params.CREATE_SERVICE }
-            }
-            steps {
-                withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
-                    
-                    // 'script' debe ir DENTRO de 'steps' y 'withAWS'
-                    script { 
-                        // Obtenemos las variables dinámicas DENTRO del bloque withAWS
-                        def awsAccountId = sh(returnStdout: true, script: 'aws sts get-caller-identity --query Account --output text').trim()
-                        def ecsTaskRoleArn = "arn:aws:iam::${awsAccountId}:role/proyecto-ecs-task-execution-role"
-                        def subnets = sh(returnStdout: true, script: "aws ec2 describe-subnets --filters 'Name=tag:Name,Values=proyecto-public-*' --query 'Subnets[*].SubnetId' --output json").trim()
-                        // Filtro corregido para usar 'group-name'
-                        def sg = sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=group-name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()
-                        def tg_arn = sh(returnStdout: true, script: "aws elbv2 describe-target-groups --names proyecto-alb-tg --query 'TargetGroups[0].TargetGroupArn' --output text").trim()
+       // --- Etapa 2: Crear el Servicio ECS (Solo la primera vez, idempotente) ---
+stage('Crear Servicio ECS (Solo la primera vez)') {
+    when {
+        expression { params.CREATE_SERVICE }
+    }
+    steps {
+        withAWS(credentials: 'aws-credentials-jenkins', region: env.AWS_REGION) {
+            script {
+                // Verificar si el servicio ya existe
+                def serviceStatus = sh(
+                    returnStdout: true,
+                    script: """
+                        aws ecs describe-services --cluster ${ECS_CLUSTER_NAME} \
+                        --services ${ECS_SERVICE_NAME} \
+                        --query 'services[0].status' --output text 2>/dev/null || echo "None"
+                    """
+                ).trim()
 
-                        // 1. Definimos un "dummy" JSON que tenga un 'containerName=web' y 'containerPort=80'
-                        def dummyTaskJson = """
-                        {
-                            "family": "${ECS_TASK_FAMILY}",
-                            "executionRoleArn": "${ecsTaskRoleArn}",
-                            "networkMode": "awsvpc",
-                            "cpu": "256",
-                            "memory": "512",
-                            "requiresCompatibilities": ["FARGATE"],
-                            "containerDefinitions": [
-                                {
-                                    "name": "web",
-                                    "image": "nginx:alpine",
-                                    "essential": true,
-                                    "portMappings": [
-                                        {
-                                            "containerPort": 80,
-                                            "protocol": "tcp"
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                        """
-                        writeFile file: 'dummy-task.json', text: dummyTaskJson
+                if (serviceStatus != "ACTIVE" && serviceStatus != "DRAINING") {
+                    echo "🟢 El servicio '${ECS_SERVICE_NAME}' no existe. Creándolo ahora..."
 
-                        // 2. Registramos la task-definition "dummy" Y CAPTURAMOS LA REVISIÓN
-                        def dummyTaskRevision = sh(returnStdout: true, script: """
-                            aws ecs register-task-definition --cli-input-json file://dummy-task.json \
-                            --query 'taskDefinition.taskDefinitionArn' --output text
-                        """).trim()
+                    def awsAccountId = sh(returnStdout: true, script: 'aws sts get-caller-identity --query Account --output text').trim()
+                    def ecsTaskRoleArn = "arn:aws:iam::${awsAccountId}:role/proyecto-ecs-task-execution-role"
+                    def subnets = sh(returnStdout: true, script: "aws ec2 describe-subnets --filters 'Name=tag:Name,Values=proyecto-public-*' --query 'Subnets[*].SubnetId' --output json").trim()
+                    def sg = sh(returnStdout: true, script: "aws ec2 describe-security-groups --filters 'Name=group-name,Values=proyecto-ecs-sg' --query 'SecurityGroups[0].GroupId' --output text").trim()
+                    def tg_arn = sh(returnStdout: true, script: "aws elbv2 describe-target-groups --names proyecto-alb-tg --query 'TargetGroups[0].TargetGroupArn' --output text").trim()
 
-                        // 3. Ahora creamos el servicio (esto SÍ funcionará)
-                        sh """
-                            aws ecs create-service --cluster ${ECS_CLUSTER_NAME} \
-                            --service-name ${ECS_SERVICE_NAME} \
-                            --task-definition ${dummyTaskRevision} \
-                            --launch-type FARGATE \
-                            --desired-count 1 \
-                            --network-configuration "awsvpcConfiguration={subnets=${subnets},securityGroups=[${sg}],assignPublicIp=ENABLED}" \
-                            --load-balancers "targetGroupArn=${tg_arn},containerName=web,containerPort=80"
-                        """
+                    // Definición temporal para iniciar el servicio
+                    def dummyTaskJson = """
+                    {
+                        "family": "${ECS_TASK_FAMILY}",
+                        "executionRoleArn": "${ecsTaskRoleArn}",
+                        "networkMode": "awsvpc",
+                        "cpu": "256",
+                        "memory": "512",
+                        "requiresCompatibilities": ["FARGATE"],
+                        "containerDefinitions": [
+                            {
+                                "name": "web",
+                                "image": "nginx:alpine",
+                                "essential": true,
+                                "portMappings": [
+                                    { "containerPort": 80, "protocol": "tcp" }
+                                ]
+                            }
+                        ]
                     }
+                    """
+                    writeFile file: 'dummy-task.json', text: dummyTaskJson
+
+                    def dummyTaskRevision = sh(returnStdout: true, script: """
+                        aws ecs register-task-definition --cli-input-json file://dummy-task.json \
+                        --query 'taskDefinition.taskDefinitionArn' --output text
+                    """).trim()
+
+                    sh """
+                        aws ecs create-service --cluster ${ECS_CLUSTER_NAME} \
+                        --service-name ${ECS_SERVICE_NAME} \
+                        --task-definition ${dummyTaskRevision} \
+                        --launch-type FARGATE \
+                        --desired-count 1 \
+                        --network-configuration "awsvpcConfiguration={subnets=${subnets},securityGroups=[${sg}],assignPublicIp=ENABLED}" \
+                        --load-balancers "targetGroupArn=${tg_arn},containerName=web,containerPort=80"
+                    """
+
+                    echo "✅ Servicio '${ECS_SERVICE_NAME}' creado correctamente."
+                } else {
+                    echo "⚠️ El servicio '${ECS_SERVICE_NAME}' ya existe, se omite la creación."
                 }
             }
         }
+    }
+}
+
 
         // --- Etapa 3: Build de la Aplicación Laravel ---
         stage('Build Docker App (Laravel)') {
