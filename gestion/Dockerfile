@@ -10,7 +10,10 @@ RUN apt-get update && apt-get install -y \
     libonig-dev \
     libxml2-dev \
     curl \
-    && docker-php-ext-install pdo_mysql mbstring gd xml
+    nodejs \
+    npm \
+    && docker-php-ext-install pdo_mysql mbstring gd xml \
+    && npm install -g npm@latest
 
 # Instalar Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -21,14 +24,16 @@ WORKDIR /var/www
 # Copiar archivos del proyecto
 COPY . .
 
-# Instalar dependencias de Laravel (sin dev)
-RUN composer install --no-dev --optimize-autoloader
+# Instalar dependencias de Laravel (dev y prod)
+RUN composer install --optimize-autoloader \
+    && npm install \
+    && npm run build
 
 # Ajustar permisos de almacenamiento y cache
 RUN chown -R www-data:www-data /var/www/storage /var/www/bootstrap/cache /var/www/public
 
-# Exponer el puerto de PHP-FPM (por defecto 9000)
+# Exponer puerto PHP-FPM (9000)
 EXPOSE 9000
 
-# Comando por defecto
-CMD ["php-fpm"]
+# Comando por defecto: PHP-FPM + Vite dev server
+CMD sh -c "php-fpm & npm run dev"
